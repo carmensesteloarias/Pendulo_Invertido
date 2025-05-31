@@ -1,0 +1,112 @@
+#include "Wire.h"
+#include "I2Cdev.h"
+#include "MPU6050.h"
+
+MPU6050 sensor;
+
+// Pines del ESP32 conectados al motor
+const int pinPWMA = 5;
+const int pinAIN2 = 2;
+const int pinAIN1 = 18;
+const int pinPWMB = 22;
+const int pinBIN1 = 19;
+const int pinBIN2 = 21;
+const int pinSTBY = 23;
+
+// PID
+float Kp = 20.0;
+float Ki = 0.0;
+float Kd = 0.5;
+float integral = 0.0;
+float previous_error = 0.0;
+
+// Filtro complementario y ángulos
+int16_t ax, ay, az, gx, gy, gz;
+float ang_x = 0, ang_y = 0;
+float ang_x_prev = 0, ang_y_prev = 0;
+float dt;
+unsigned long tiempo_prev = 0;
+
+// Límites del PID
+const float MAX_SPEED = 255;
+const float MIN_SPEED = -255;
+
+// Ángulo deseado
+const float desired_angle = 0.0;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22);
+  sensor.initialize();
+
+  // Configuración pines motor
+  pinMode(pinAIN2, OUTPUT);
+  pinMode(pinAIN1, OUTPUT);
+  pinMode(pinPWMA, OUTPUT);
+  pinMode(pinBIN1, OUTPUT);
+  pinMode(pinBIN2, OUTPUT);
+  pinMode(pinPWMB, OUTPUT);
+  pinMode(pinSTBY, OUTPUT);
+}
+
+void loop() {
+  leerSensor();
+  float error = desired_angle - ang_x;
+  dt = (millis() - tiempo_prev) / 1000.0;
+  tiempo_prev = millis();
+
+  // PID
+  integral += error * dt;
+  float derivative = (error - previous_error) / dt;
+  float control_signal = Kp * error + Ki * integral + Kd * derivative;
+  previous_error = error;
+
+  // Saturación
+  control_signal = constrain(control_signal, MIN_SPEED, MAX_SPEED);
+
+  // Aplicar señal al motor
+  enableMotors();
+  moveMotor(pinPWMA, pinAIN1, pinAIN2, control_signal);
+  moveMotor(pinPWMB, pinBIN1, pinBIN2, control_signal);
+
+  // Salida por monitor serie
+  Serial.print("Ángulo X: "); Serial.print(ang_x);
+  Serial.print(" | Error: "); Serial.print(error);
+  Serial.print(" | PID: "); Serial.println(control_signal);
+
+  delay(1);  // alta frecuencia
+}
+
+// Función: leer sensor y calcular ángulo
+void leerSensor() {
+  sensor.getAcceleration(&ax, &ay, &az);
+  sensor.getRotation(&gx, &gy, &gz);
+
+  float accel_ang_x = atan2(ay, sqrt(ax * ax + az * az)) * 180.0 / PI;
+  float accel_ang_y = atan2(-ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
+
+  dt = (millis() - tiempo_prev) / 1000.0;
+  ang_x = 0.98 * (ang_x_prev + (gx / 131.0) * dt) + 0.02 * accel_ang_x;
+  ang_y = 0.98 * (ang_y_prev + (gy / 131.0) * dt) + 0.02 * accel_ang_y;
+
+  ang_x_prev = ang_x;
+  ang_y_prev = ang_y;
+}
+
+// Función: habilitar puente H
+void enableMotors() {
+  digitalWrite(pinSTBY, HIGH);
+}
+
+// Función: mover motor con PWM
+void moveMotor(int pwmPin, int in1, int in2, float speed) {
+  if (speed > 0) {
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+    analogWrite(pwmPin, speed);
+  } else {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+    analogWrite(pwmPin, -speed);
+  }
+}
